@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 import os
 from xpinyin import Pinyin
 
-# 新增销售记录文件路径
+
 SALES_HISTORY_PATH = "销售历史.xlsx"
 EXCEL_PATH = "商品资料.xlsx"
-
+PURCHASE_HISTORY_PATH = "进货管理.xlsx"
 
 def load_data():
     try:
@@ -19,6 +19,16 @@ def load_data():
                    '保质期', '拼音码', '创建日期']
         return pd.DataFrame(columns=columns)
 
+def load_purchase_history():
+    try:
+        return pd.read_excel(PURCHASE_HISTORY_PATH, dtype={'条码': str}, parse_dates=['入库时间', '生产日期', '到期时间'])
+    except FileNotFoundError:
+        columns = ['名称', '条码', '保质期', '生产日期', '到期时间', '入库时间', '入库数量', '是否售空']
+        return pd.DataFrame(columns=columns)
+
+
+def save_purchase_history(df):
+    df.to_excel(PURCHASE_HISTORY_PATH, index=False)
 
 def save_data(df):
     df.to_excel(EXCEL_PATH, index=False)
@@ -42,10 +52,9 @@ def purchase_mode():
             match = df[df['条码'] == barcode]
 
             if not match.empty:
-                df.loc[df['条码'] == barcode, '库存量'] += 1
-                save_data(df)
-                st.success(f"已更新库存：{match.iloc[0]['名称（必填）']} 当前库存：{match.iloc[0]['库存量'] + 1}")
+                st.session_state.existing_product_barcode = barcode
                 st.session_state.purchase_input = ""  # 清空输入
+                st.rerun()
             else:
                 st.session_state.new_product_barcode = barcode
                 st.session_state.purchase_input = ""  # 清空输入
@@ -63,13 +72,16 @@ def purchase_mode():
             category = st.selectbox("商品分类", ["零食", "饮料", "日用品"])
             purchase_price = st.number_input("进货价（必填）", min_value=0.0)
             sale_price = st.number_input("销售价（必填）", min_value=0.0)
+            quantity = st.number_input("入库数量", min_value=1)
+            production_date = st.date_input("生产日期")
+            shelf_life = st.number_input("保质期（天）", min_value=1)
 
             if st.form_submit_button("确认添加"):
                 new_product = {
                     '名称（必填）': name,
                     '分类（必填）': category,
                     '条码': st.session_state.new_product_barcode,
-                    '库存量': 1,
+                    '库存量': quantity,
                     '进货价（必填）': purchase_price,
                     '销售价（必填）': sale_price,
                     '拼音码': generate_pinyin(name),
@@ -78,7 +90,54 @@ def purchase_mode():
                 df = load_data()
                 df = pd.concat([df, pd.DataFrame([new_product])], ignore_index=True)
                 save_data(df)
+
+                purchase_history = {
+                    '名称': name,
+                    '条码': st.session_state.new_product_barcode,
+                    '保质期': shelf_life,
+                    '生产日期': production_date,
+                    '到期时间': production_date + timedelta(days=shelf_life),
+                    '入库时间': datetime.now(),
+                    '入库数量': quantity,
+                    '是否售空': '否'
+                }
+                df_purchase = load_purchase_history()
+                df_purchase = pd.concat([df_purchase, pd.DataFrame([purchase_history])], ignore_index=True)
+                save_purchase_history(df_purchase)
+
                 del st.session_state.new_product_barcode
+                st.rerun()
+
+    if 'existing_product_barcode' in st.session_state:
+        with st.form("existing_product_form"):
+            st.write("已有商品入库")
+            barcode = st.session_state.existing_product_barcode
+            df = load_data()
+            product = df[df['条码'] == barcode].iloc[0]
+            st.write(f"商品名称：{product['名称（必填）']}")
+            quantity = st.number_input("入库数量", min_value=1)
+            production_date = st.date_input("生产日期")
+            shelf_life = st.number_input("保质期（天）", min_value=1)
+
+            if st.form_submit_button("确认入库"):
+                df.loc[df['条码'] == barcode, '库存量'] += quantity
+                save_data(df)
+
+                purchase_history = {
+                    '名称': product['名称（必填）'],
+                    '条码': barcode,
+                    '保质期': shelf_life,
+                    '生产日期': production_date,
+                    '到期时间': production_date + timedelta(days=shelf_life),
+                    '入库时间': datetime.now(),
+                    '入库数量': quantity,
+                    '是否售空': '否'
+                }
+                df_purchase = load_purchase_history()
+                df_purchase = pd.concat([df_purchase, pd.DataFrame([purchase_history])], ignore_index=True)
+                save_purchase_history(df_purchase)
+
+                del st.session_state.existing_product_barcode
                 st.rerun()
 
 
@@ -314,6 +373,61 @@ def sales_history_mode():
             mime='text/csv'
         )
 
+def purchase_management_mode():
+    st.subheader("进货管理")
+
+    # 加载进货历史数据
+    df_purchase = load_purchase_history()
+
+    # 日期范围筛选
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("开始日期", df_purchase['入库时间'].min().date())
+    with col2:
+        end_date = st.date_input("结束日期", df_purchase['入库时间'].max().date())
+
+    # 筛选数据
+    mask = (df_purchase['入库时间'].dt.date >= start_date) & (df_purchase['入库时间'].dt.date <= end_date)
+    filtered_df = df_purchase[mask]
+
+    # 是否售空筛选
+    show_sold_out = st.checkbox("显示已售空", value=False)
+    if not show_sold_out:
+        filtered_df = filtered_df[filtered_df['是否售空'] == '否']
+
+    # 剩余保质期筛选
+    remaining_shelf_life = st.selectbox("剩余保质期", ["全部", "少于3个月", "少于1个月"])
+    if remaining_shelf_life == "少于3个月":
+        filtered_df = filtered_df[filtered_df['到期时间'] <= datetime.now() + timedelta(days=90)]
+    elif remaining_shelf_life == "少于1个月":
+        filtered_df = filtered_df[filtered_df['到期时间'] <= datetime.now() + timedelta(days=30)]
+
+    st.info("注意：剩余保质期少于3个月的单子会自动标黄，请及时检查库存，若售空则及时更新状态。")
+
+    # 高亮显示剩余保质期少于3个月的条目
+    def highlight_short_shelf_life(row):
+        if row['到期时间'] <= datetime.now() + timedelta(days=90):
+            return ['background-color: #ffffcc; font-weight: bold'] * len(row)
+        else:
+            return [''] * len(row)
+
+    st.dataframe(filtered_df.style.apply(highlight_short_shelf_life, axis=1))
+
+    # 操作按钮
+    if not filtered_df.empty:
+        selected_index = st.selectbox("选择进货单", filtered_df.index)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("标记为售空" if filtered_df.loc[selected_index, '是否售空'] == '否' else "恢复为未售空"):
+                df_purchase.loc[selected_index, '是否售空'] = '是' if df_purchase.loc[selected_index, '是否售空'] == '否' else '否'
+                save_purchase_history(df_purchase)
+                st.rerun()
+        with col2:
+            if st.button("删除进货单"):
+                df_purchase = df_purchase.drop(selected_index)
+                save_purchase_history(df_purchase)
+                st.rerun()
+
 
 # 主函数
 def main():
@@ -321,13 +435,15 @@ def main():
 
     # 修改模式选择
     mode = st.sidebar.radio("选择模式",
-                            ["销售模式", "入库模式", "销售历史"],
+                            ["销售模式", "入库模式", "进货管理", "销售历史"],
                             on_change=lambda: [st.session_state.pop(k, None) for k in ['cart', 'new_product_barcode']])
 
     if mode == "销售模式":
         sale_mode()
     elif mode == "入库模式":
         purchase_mode()
+    elif mode == "进货管理":
+        purchase_management_mode()
     else:
         sales_history_mode()
 
