@@ -19,9 +19,12 @@ def load_data():
                    '保质期', '拼音码', '创建日期']
         return pd.DataFrame(columns=columns)
 
+    
 def load_purchase_history():
     try:
-        return pd.read_excel(PURCHASE_HISTORY_PATH, dtype={'条码': str}, parse_dates=['入库时间', '生产日期', '到期时间'])
+        df = pd.read_excel(PURCHASE_HISTORY_PATH, dtype={'条码': str}, parse_dates=['入库时间', '生产日期', '到期时间'])
+        df['入库时间'] = pd.to_datetime(df['入库时间'], errors='coerce')  # 确保入库时间为日期类型
+        return df
     except FileNotFoundError:
         columns = ['名称', '条码', '保质期', '生产日期', '到期时间', '入库时间', '入库数量', '是否售空']
         return pd.DataFrame(columns=columns)
@@ -146,6 +149,7 @@ def load_sales_history():
     """加载销售历史数据"""
     try:
         df = pd.read_excel(SALES_HISTORY_PATH, dtype={'条码': str}, parse_dates=['销售时间'])
+        df['销售时间'] = pd.to_datetime(df['销售时间'], errors='coerce')  # 确保销售时间为日期类型
         # 数据清洗
         df['数量'] = df['数量'].astype(int)
         df['销售额'] = df['销售额'].astype(float)
@@ -378,13 +382,13 @@ def purchase_management_mode():
 
     # 加载进货历史数据
     df_purchase = load_purchase_history()
-
+    
     # 日期范围筛选
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("开始日期", df_purchase['入库时间'].min().date())
+        start_date = st.date_input("开始日期", pd.to_datetime(df_purchase['入库时间'].min(), errors='coerce').date())
     with col2:
-        end_date = st.date_input("结束日期", df_purchase['入库时间'].max().date())
+        end_date = st.date_input("结束日期", pd.to_datetime(df_purchase['入库时间'].max(), errors='coerce').date())
 
     # 筛选数据
     mask = (df_purchase['入库时间'].dt.date >= start_date) & (df_purchase['入库时间'].dt.date <= end_date)
